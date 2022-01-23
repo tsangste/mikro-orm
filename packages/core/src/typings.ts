@@ -267,6 +267,7 @@ export interface EntityProperty<T extends AnyEntity<T> = any> {
   fixedOrder?: boolean;
   fixedOrderColumn?: string;
   pivotTable: string;
+  pivotEntity: string;
   joinColumns: string[];
   inverseJoinColumns: string[];
   referencedColumnNames: string[];
@@ -298,6 +299,10 @@ export class EntityMetadata<T extends AnyEntity<T> = any> {
   }
 
   addProperty(prop: EntityProperty<T>, sync = true) {
+    if (prop.pivotTable && !prop.pivotEntity) {
+      prop.pivotEntity = prop.pivotTable;
+    }
+
     this.properties[prop.name] = prop;
     this.propertyOrder.set(prop.name, this.props.length);
 

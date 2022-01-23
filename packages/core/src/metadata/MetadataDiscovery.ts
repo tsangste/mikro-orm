@@ -338,6 +338,12 @@ export class MetadataDiscovery {
     const meta2 = this.metadata.get(prop.type);
     Utils.defaultValue(prop, 'fixedOrder', !!prop.fixedOrderColumn);
 
+    if (prop.pivotEntity) {
+      const pivotMeta = this.metadata.get(prop.pivotEntity);
+      pivotMeta.tableName ??= this.namingStrategy.classToTableName(pivotMeta.className);
+      prop.pivotTable = pivotMeta.tableName;
+    }
+
     if (!prop.pivotTable && prop.owner && this.platform.usesPivotTable()) {
       prop.pivotTable = this.namingStrategy.joinTableName(meta.collection, meta2.collection, prop.name);
     }
@@ -430,7 +436,7 @@ export class MetadataDiscovery {
   }
 
   private initFactoryField<T>(meta: EntityMetadata<T>, prop: EntityProperty<T>): void {
-    ['mappedBy', 'inversedBy'].forEach(type => {
+    ['mappedBy', 'inversedBy', 'pivotEntity'].forEach(type => {
       const value = prop[type];
 
       if (value instanceof Function) {
@@ -445,6 +451,10 @@ export class MetadataDiscovery {
   }
 
   private async definePivotTableEntity(meta: EntityMetadata, prop: EntityProperty): Promise<EntityMetadata> {
+    if (prop.pivotEntity) {
+      return this.metadata.get(prop.pivotEntity);
+    }
+
     let tableName = prop.pivotTable;
     let schemaName: string | undefined;
 
@@ -461,6 +471,9 @@ export class MetadataDiscovery {
       schema: schemaName,
       pivotTable: true,
     });
+    prop.pivotEntity = data.className;
+    console.log(prop);
+    // TODO ensure pivotEntity is always set
 
     if (prop.fixedOrder) {
       const primaryProp = await this.defineFixedOrderProperty(prop, targetType);
@@ -486,7 +499,7 @@ export class MetadataDiscovery {
     data.properties[meta.root.name + '_owner'] = await this.definePivotProperty(prop, meta.root.name + '_owner', meta.root.name!, targetType + '_inverse', true);
     data.properties[targetType + '_inverse'] = await this.definePivotProperty(prop, targetType + '_inverse', targetType, meta.root.name + '_owner', false);
 
-    return this.metadata.set(prop.pivotTable, data);
+    return this.metadata.set(data.className, data);
   }
 
   private async defineFixedOrderProperty(prop: EntityProperty, targetType: string): Promise<EntityProperty> {
