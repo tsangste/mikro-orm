@@ -2,11 +2,214 @@
 <feed xmlns="http://www.w3.org/2005/Atom">
     <id>https://mikro-orm.io/blog</id>
     <title>MikroORM Blog</title>
-    <updated>2020-10-13T00:00:00.000Z</updated>
+    <updated>2022-02-06T00:00:00.000Z</updated>
     <generator>https://github.com/jpmonette/feed</generator>
     <link rel="alternate" href="https://mikro-orm.io/blog"/>
     <subtitle>MikroORM Blog</subtitle>
     <icon>https://mikro-orm.io/img/favicon.ico</icon>
+    <entry>
+        <title type="html"><![CDATA[MikroORM 5: Stricter, Safer, Smarter]]></title>
+        <id>mikro-orm-5-released</id>
+        <link href="https://mikro-orm.io/blog/mikro-orm-5-released"/>
+        <updated>2022-02-06T00:00:00.000Z</updated>
+        <summary type="html"><![CDATA[The next major version of MikroORM has been just released. The title says: Stricter, Safer, Smarter – why?]]></summary>
+        <content type="html"><![CDATA[<p>The next major version of MikroORM has been just released. The title says: Stricter, Safer, Smarter – why?</p><p><img src="https://cdn-images-1.medium.com/max/430/0*atMJ3hrlUosSpnQy.jpg"/></p><ul><li>Greatly improved type safety (e.g. populate and partial loading hints)</li><li>Auto-flush mode (so we never lose in-memory changes)</li><li>Automatic refreshing of loaded entities (say goodby to refresh: true)</li><li>Reworked schema diffing with automatic down migrations support</li><li>and <a href="https://github.com/mikro-orm/mikro-orm/blob/master/CHANGELOG.md#500-rc0-2022-01-23">many many more</a>...</li></ul><blockquote><p>This time it took almost a year to get here – initial work on v5 started <a href="https://github.com/mikro-orm/mikro-orm/issues/1623">back in March 2021</a>.</p></blockquote><h3>In case you don’t know…</h3><p>If you never heard of <a href="https://github.com/mikro-orm/mikro-orm">MikroORM</a>, it’s a TypeScript data-mapper ORM with Unit of Work and Identity Map. It supports MongoDB, MySQL, PostgreSQL, and SQLite drivers currently. Key features of the ORM are:</p><ul><li><a href="https://github.com/mikro-orm/mikro-orm#implicit-transactions">Implicit transactions</a></li><li><a href="https://github.com/mikro-orm/mikro-orm#changeset-based-persistence">ChangeSet based persistence</a></li><li><a href="https://mikro-orm.io/docs/identity-map/">Identity map</a></li></ul><p><img src="https://cdn-images-1.medium.com/max/1024/0*fKozvvTJns0y3w5U.png"/></p><p>You can read the full <a href="https://medium.com/dailyjs/introducing-mikro-orm-typescript-data-mapper-orm-with-identity-map-9ba58d049e02">introductory article here</a> (but note that many things have changed since that was written) or <a href="https://mikro-orm.io/">browse through the docs</a>.</p><h3>Quick summary of 4.x releases</h3><p>Before we dive into all the things v5, let’s recap what happened in 4.x releases:</p><ul><li><a href="https://mikro-orm.io/docs/caching/">Result cache</a></li><li><a href="https://github.com/mikro-orm/mikro-orm/pull/959">Automatic transaction context</a></li><li><a href="https://mikro-orm.io/docs/embeddables/#nested-embeddables">Nested embeddables</a> and many other improvements in this domain</li><li><a href="https://mikro-orm.io/docs/configuration/#using-environment-variables">Using env vars for configuration</a></li></ul><p>But enough of the history lesson, let’s talk about the future!</p><h3>Improved type safety</h3><p>Let’s jump right into the most interesting feature – strict typing (almost) everywhere! <code>em.create()</code>, <code>toJSON()</code>, <code>toObject()</code>, populate, partial loading, and order by hints, all of that (and even more!) is now strictly typed.</p><p>Let’s check the following example:</p><pre><code class="language-ts">const god = em.create(Author, {
+  name: &#x27;God&#x27;, // validates required properties
+  email: &#x27;god@heaven.io&#x27;,
+  books: [{
+    title: &#x27;Bible, part 1&#x27;,
+    tags: [{ name: &#x27;old&#x27; }, { name: &#x27;bestseller&#x27; }],
+  }],
+}, { persist: true }); // we can enable this globally via `persistOnCreate: true`
+await em.flush();
+
+// simulate new request
+em.clear();
+
+// `authors` is of type `Loaded&lt;Author, &#x27;books.tags&#x27;&gt;[]`
+const authors = await em.find(Author, {}, {
+  populate: [&#x27;books.tags&#x27;], // populate hint can be inferred from `fields` if not explicitly provided
+  fields: [&#x27;books.tags.name&#x27;], // strict partial loading with dot notation support
+  orderBy: { name: &#x27;asc&#x27;, books: { tags: { name: &#x27;asc&#x27; } } }, // strict order by with object nesting
+});
+
+// `books` and `tags` will be typed as `LoadedCollection` so we can use safe `$` accessor
+console.log(authors[0].books.$[0].tags.$[0].name);
+const dto = wrap(authors[0]).toObject();
+console.log(dto.books[0].tags[0].name); // DTOs are also strictly typed
+</code></pre><p>First, we use <code>em.create()</code> to build the whole entity graph in a single step. It will validate the payload for both types and optionality. Some properties on the entity might have default values provided via hooks or database functions – while we might want to define them as required properties, they should act as optional in the context of <code>em.create()</code>. To deal with this problem, we can specify such properties that should be considered as optional via <code>OptionalProps</code> symbol:</p><pre><code class="language-ts">@Entity()
+export class Author {
+
+  // only `name` will be considered as required for `em.create()`
+  [OptionalProps]?: &#x27;createdAt&#x27; | &#x27;updatedAt&#x27;;
+
+  @PrimaryKey()
+  id!: number;
+
+  @Property({ defaultRaw: &#x27;current_timestamp()&#x27; })
+  createdAt!: Date;
+
+  @Property({ onUpdate: () =&gt; new Date(), length: 3, defaultRaw: &#x27;current_timestamp(3)&#x27; })
+  updatedAt!: Date;
+
+  @Property()
+  name!: string;
+
+}
+</code></pre><blockquote><p>Some property names are always considered as optional: <code>id</code>, <code>_id</code>, <code>uuid</code>.</p></blockquote><p>Then we load all Author entities, populating their books and the book tags. All of the FindOptions here are strictly typed, moreover, we could even skip the populate hint as it can be inferred from fields option automatically.</p><p><img src="https://cdn-images-1.medium.com/max/600/0*3g12H4O5KrzmQMrk.jpg"/></p><p>We might still need some type casting for DTOs. The serialized form of an entity can be very unpredictable – there are many variables that define how an entity will be serialized, e.g. loaded relation vs reference, property serializers, lazy properties, custom entity serializer/<code>toJSON</code> method, eager loading, recursion checks, … Therefore, all relations on the EntityDTO type are considered as loaded, this is mainly done to allow better DX as if we had all relations typed as <code>Primary&lt;T&gt; | EntityDTO&lt;T&gt;</code> (e.g. <code>number | EntityDTO&lt;Book&gt;</code>), it would be impossible to benefit from intellisense/autosuggestions. Imagine this scenario:</p><pre><code class="language-ts">const book = {} as Book;
+const dto = wrap(book).toObject(); // EntityDTO&lt;Book&gt;
+
+// this is now possible, but with the PK union type, we would need to type cast all the time
+const name = dto.author.name;
+</code></pre><h3>Validation improvements</h3><p>Adding on top of the compile-time validation, we also get a runtime validation right before insert queries are fired, to ensure required properties have their values. This is important mainly in mongo, where we don’t have optionality checks on the schema level.</p><p>When we try to use the CLI without installing it locally, we also get a warning. And what if we forget to update some of the ORM packages and ended up with version mismatch and multiple installed core packages? We now validate that too!</p><h3>Reworked schema diffing</h3><p>Schema diffing has been one of the weakest spots. Often, additional queries were produced or it was even impossible to get to a fully synchronized state.</p><p>Schema diffing has been completely reworked to address all currently known issues, and adding <em>a bit more</em> on top of that:</p><ul><li>Diffing foreign key constraints</li><li>Proper index diffing (before we compared just names)</li><li>Custom index expressions</li><li>Comment diffing</li><li>Column length diffing (e.g. <code>numeric(10,2)</code> or <code>varchar(100)</code>)</li><li>Changing primary key types</li><li>Schema/namespace diffing (Postgres only)</li><li>Automatic down migrations (no SQLite support yet)</li><li>Check constraints support (Postgres only)</li></ul><h3>Smarter migrations</h3><p>In the production environment, we might want to use compiled migration files. Since v5, this should work almost out of the box, all we need to do is to configure the migrations path accordingly. Executed migrations now ignore the file extension, so we can use both node and ts-node on the same database. This is done in a backward-compatible manner.</p><pre><code class="language-ts">import { MikroORM, Utils } from &#x27;@mikro-orm/core&#x27;;
+
+await MikroORM.init({
+  migrations: {
+    path: &#x27;dist/migrations&#x27;,
+    pathTs: &#x27;src/migrations&#x27;,
+  },
+  // or alternatively
+  // migrations: {
+  //   path: Utils.detectTsNode() ? &#x27;src/migrations&#x27; : &#x27;dist/migrations&#x27;,
+  // },
+  // ...
+});
+</code></pre><p>Creating new migration will now automatically save the target schema snapshot into the migrations folder. This snapshot will be then used if we try creating a new migration, instead of using the current database schema. This means that if we try to create new migration before we run the pending ones, we still get the right schema diff (and no migration will be created if no additional changes were made).</p><blockquote><p>Snapshots should be versioned just like the regular migration files.</p></blockquote><h3>Auto-flush mode</h3><p><img src="https://cdn-images-1.medium.com/max/1024/0*J74FKP7MaZoHO3Al.jpg"/></p><p>Up until now, flushing was always an explicit action. With v5, we can configure the flushing strategy, similarly to how JPA/hibernate work. We have 3 flush modes:</p><ul><li><code>FlushMode.COMMIT</code> - The <code>EntityManager</code> tries to delay the flush until the current transaction is committed, although it might flush prematurely too.</li><li><code>FlushMode.AUTO</code> - This is the default mode, and it flushes the <code>EntityManager</code> only if necessary.</li><li><code>FlushMode.ALWAYS</code> - Flushes the <code>EntityManager</code> before every query.</li></ul><p>FlushMode.AUTO will try to detect changes on the entity we are querying, and flush if there is an overlap:</p><pre><code class="language-ts">// querying for author will trigger auto-flush if we have new author persisted
+const a1 = new Author(...);
+em.persist(a1);
+const r1 = await em.find(Author, {});
+
+// querying author won&#x27;t trigger auto-flush if we have new book, but no changes on author
+const b4 = new Book(...);
+em.persist(b4);
+const r2 = await em.find(Author, {});
+
+// but querying for book will trigger auto-flush
+const r3 = await em.find(Book, {});
+</code></pre><p>More about flush modes <a href="https://mikro-orm.io/docs/unit-of-work/#flush-modes">in the docs</a>.</p><h3>Automatic refreshing of loaded entities</h3><p>Previously, when an entity was loaded and we needed to reload it, providing explicit refresh: true in the options was required. Refreshing of entity also had one problematic side effect – the entity data (used for computing changesets) were always updated based on the newly loaded entity, hence forgetting the previous state (resulting in possibly lost updates done on the entity before refreshing).</p><p>Now we always merge the newly loaded data with the current state, and when we see an updated property, we keep the changed value instead. Moreover, for <code>em.findOne()</code> with a primary key condition, we try to detect whether it makes sense to reload an entity, by comparing the options and already loaded property names. In this step the <code>fields</code> and <code>populate</code> options are taken into account to support both partial loading and lazy properties.</p><pre><code class="language-ts">// first partially load author with `id` and `email` only
+const a1 = await em.findOneOrFail(Author, 123, { fields: [&#x27;id&#x27;, &#x27;email&#x27;] });
+a1.email = &#x27;lol&#x27;; // let&#x27;s change the email
+
+// reloading with same fields won&#x27;t fire the query (as before)
+const a2 = await em.findOneOrFail(Author, 123, { fields: [&#x27;email&#x27;] });
+console.log(a1 === a2); // true, same entity instance, no query was fired
+
+// reloading with additional fields will work without `refresh: true`
+const a3 = await em.findOneOrFail(Author, 123, { fields: [&#x27;id&#x27;, &#x27;age&#x27;] });
+console.log(a1 === a3); // true, same entity instance, but updated!
+console.log(a1.age); // new values are loaded
+a1.age = 1000; // let&#x27;s override them
+
+// reloading full entity will work without `refresh: true`
+const a4 = await em.findOneOrFail(Author, 123, { populate: [&#x27;books&#x27;] });
+console.log(a1 === a4); // true, same entity instance, but updated!
+console.log(a1.termsAccepted); // new values are loaded
+
+await em.flush(); // updates the author with new email and age
+</code></pre><p>For complex conditions in <code>em.findOne()</code> and for any queries via <code>em.find()</code>, we always do the query anyway, but now instead of ignoring the data in case such entity was loaded, we merge them in the same manner.</p><pre><code class="language-ts">// first partially load author entities
+const r1 = await em.find(Author, {}, { fields: [&#x27;id&#x27;] });
+r1[0].email = &#x27;lol&#x27;; // let&#x27;s change one of the emails
+console.log(r1[0].name); // undefined, not loaded
+
+// reload full entities - no `refresh: true` needed!
+const r2 = await em.find(Author, {});
+console.log(r2[0]); // fully loaded author entity, but `email` is changed to &#x27;lol&#x27;
+console.log(r1[0] === r2[0]); // true, same entity instance, just updated!
+
+// flushing will now fire one update query to change the email of one author
+await em.flush();
+</code></pre><h3>Seeder package</h3><p>MikroORM v5 now has a new package for seeding your database with initial or testing data. It allows creating entities via the same EntityManager API as usual, adding support for entity factories, and generating fake data via faker (the newly release community version).</p><p>See the <a href="https://mikro-orm.io/docs/seeding">seeder docs</a> for more examples.</p><h3>Polymorphic embeddables</h3><p>Polymorphic embeddables allow us to define multiple classes for a single embedded property and the right one will be used based on the discriminator column, similar to how single table inheritance works. While this currently works only for embeddables, support for polymorphic entities will be probably added in one of the 5.x releases.</p><pre><code class="language-ts">@Entity()
+class Owner {
+
+  @PrimaryKey()
+  id!: number;
+
+  @Property()
+  name!: string;
+
+  @Embedded(() =&gt; [Cat, Dog])
+  pet!: Cat | Dog;
+
+}
+</code></pre><p>Check out the <a href="https://mikro-orm.io/docs/embeddables/#polymorphic-embeddables">documentation</a> for a complete example.</p><p>There are many other small improvements in embeddables, as well as many issues were addressed. Two examples:</p><ul><li>Support for many-to-one relations (storing only primary key and being able to populate the relation same as with regular entities)</li><li>Support for <code>onCreate</code> and <code>onUpdate</code> property options</li></ul><h3>Populating lazy scalar properties</h3><p>Previously, the only way to populate a lazy scalar property was during the initial load of containing entity. If such entity was already loaded in the identity map (without this property), we needed to refresh its state – and potentially lose some state. MikroORM v5 allows to populate such properties via <code>em.populate()</code> too. Doing so will never override any in-memory changes we might have done on the entity.</p><h3>Creating references without EntityManager</h3><p>When we wanted to create a reference, so an entity that is represented only by its primary key, we always had to have access to the current <code>EntityManager</code> instance, as such entity always needed to be managed.</p><p>Thanks to the new helper methods on the Reference class, we can now create entity references without access to <code>EntityManager</code>. This can be handy if you want to create a reference from an inside entity constructor:</p><pre><code class="language-ts">@Entity()
+export class Book {
+
+  @ManyToOne(() =&gt; Author, { wrappedReference: true })
+  author!: IdentifiedReference&lt;Author&gt;;
+
+  constructor(authorId: number) {
+    this.author = Reference.createFromPK(Author, authorId);
+  }
+
+}
+</code></pre><blockquote><p>The <code>Reference</code> wrapper is an optional class to allow more type safety over relationships. Alternatively, we can use <code>Reference.createNakedFromPK()</code>.</p></blockquote><p>This will create an unmanaged reference, that will be then merged to the <code>EntityManager</code> once owning entity gets flushed. Note that before we flush it, methods like <code>Reference.init()</code> or <code>Reference.load()</code> won’t be available as they require the EntityManager instance.</p><h3>Smarter <code>expr</code> helper</h3><p>The <code>expr()</code> helper can be used to get around strict typing. It was an identity function, doing nothing more than returning its parameter – all it did was to tell TypeScript the value is actually of a different type (a generic string to be precise).</p><p>We can now use the helper in two more ways:</p><ul><li>With a callback signature to allow dynamic aliasing of the expression</li><li>With an array argument to allow comparing tuples</li></ul><pre><code class="language-ts">import { expr } from &#x27;@mikro-orm/core&#x27;;
+
+const res1 = await em.find(Book, {
+  // the type argument is optional, use it to get autocomplete on the entity properties
+  [expr&lt;Book&gt;([&#x27;price&#x27;, &#x27;createdAt&#x27;])]: { $lte: [100, new Date()] },
+});
+
+// will issue query similar to this:
+// select `b0`.* from `book` as `b0` where (`b0`.`price`, `b0`.`created_at`) &lt;= (?, ?)
+
+const res2 = await em.find(Book, {
+  // the type argument is optional, use it to get autocomplete on the entity properties
+  [expr(as =&gt; `lower(${as}.name)`)]: &#x27;jon&#x27;,
+});
+
+// will issue query similar to this:
+// select `b0`.* from `book` as `b0` where lower(b0.name) = ?
+</code></pre><h3>Awaitable QueryBuilder</h3><p>QueryBuilder is now aware of its type, and the <code>getResult()</code> and <code>execute()</code> methods are typed based on it. We can also await the QueryBuilder instance directly, which will automatically execute the QB and return the appropriate response. The QB instance is now typed based on usage of <code>select</code>/<code>insert</code>/<code>update</code>/<code>delete</code>/<code>truncate</code> methods to one of:</p><ul><li><code>SelectQueryBuilder</code> – awaiting yields array of entities</li><li><code>CountQueryBuilder</code> – awaiting yields number</li><li><code>InsertQueryBuilder</code> – awaiting yields <code>QueryResult</code></li><li><code>UpdateQueryBuilder</code> – awaiting yields <code>QueryResult</code></li><li><code>DeleteQueryBuilder</code> – awaiting yields <code>QueryResult</code></li><li><code>TruncateQueryBuilder</code> – awaiting yields <code>QueryResult</code></li></ul><p><img src="https://cdn-images-1.medium.com/max/798/0*jFsyXtSw1ZzZ9-cD.jpg"/></p><pre><code class="language-ts">const res1 = await em.createQueryBuilder(Publisher).insert({
+  name: &#x27;p1&#x27;,
+  type: PublisherType.GLOBAL,
+});
+// res1 is of type `QueryResult&lt;Publisher&gt;`
+console.log(res1.insertId);
+
+const res2 = await em.createQueryBuilder(Publisher)
+  .select(&#x27;*&#x27;)
+  .where({ name: &#x27;p1&#x27; })
+  .limit(5);
+// res2 is Publisher[]
+console.log(res2.map(p =&gt; p.name));
+
+const res3 = await em.createQueryBuilder(Publisher).count().where({ name: &#x27;p1&#x27; });
+// res3 is number
+console.log(res3 &gt; 0);
+
+const res4 = await em.createQueryBuilder(Publisher)
+  .update({ type: PublisherType.LOCAL })
+  .where({ name: &#x27;p1&#x27; });
+// res4 is QueryResult&lt;Publisher&gt;
+console.log(res4.affectedRows &gt; 0);
+
+const res5 = await em.createQueryBuilder(Publisher).delete().where({ name: &#x27;p1&#x27; });
+// res4 is QueryResult&lt;Publisher&gt;
+console.log(res4.affectedRows &gt; 0);
+expect(res5.affectedRows &gt; 0).toBe(true); // test the type
+</code></pre><h3>Wildcard schema entities</h3><p>Up until now, we were able to define entities in a specific schema, or without a schema. Such entities then used the schema based on ORM config or <code>FindOptions</code>. This allowed us to read entities from a specific schema, but we were missing the power of Unit of Work here.</p><p>With v5, entity instances now hold schema name (as part of <code>WrappedEntity</code>). Managed entities will have the schema from FindOptions or metadata. Methods that create new entity instances like <code>em.create()</code> or <code>em.getReference()</code> now have an options parameter to allow setting the schema. We can also use <code>wrap(entity).getSchema()</code> and <code>wrap(entity).setSchema()</code>.</p><p>Entities can now specify wildcard schema via <code>@Entity({ schema: &#x27;*&#x27; })</code>. That way they will be ignored in SchemaGenerator unless the schema option is specified.</p><ul><li>If we specify schema, the entity only exists in that schema</li><li>If we define <code>*</code> schema, the entity can exist in any schema, always controlled by the parameter</li><li>If we skip schema option, the value will be taken from global ORM config</li></ul><p>More about this topic can be found <a href="https://mikro-orm.io/docs/next/multiple-schemas#wildcard-schema">here</a>.</p><h3>Deep assigning of entities</h3><p>Another weak spot was assigning new values to existing entities. While <code>wrap().assign()</code> was originally designed to update a single entity and its values, a lot of users wanted to assign an entity graph, updating relations in a single step too.</p><p>With v5, the way how <code>EntityAssigner</code> detects what entity should be updated has changed. Assigning a deep entity graph should be possible by default, without any additional options. It works based on matching entity primary keys, so if you want to issue an update for a relationship instead of creating new relation, make sure you first load it and pass down its primary key to the assign helper:</p><pre><code class="language-ts">const book = await em.findOneOrFail(Book, 1, { populate: [&#x27;author&#x27;] });
+
+// update existing book&#x27;s author&#x27;s name
+wrap(book).assign({
+  author: {
+    id: book.author.id,
+    name: &#x27;New name...&#x27;,
+  },
+});
+</code></pre><p>If we want to always update the entity, even without the entity PK being present in data, we can use <code>updateByPrimaryKey: false</code>:</p><pre><code class="language-ts">const book = await em.findOneOrFail(Book, 1, { populate: [&#x27;author&#x27;] });
+
+// update existing book&#x27;s author&#x27;s name
+wrap(book).assign({
+  author: {
+    name: &#x27;New name...&#x27;,
+  },
+}, { updateByPrimaryKey: false });
+</code></pre><p>More examples on this topic can be found <a href="https://mikro-orm.io/docs/entity-helper/#updating-deep-entity-graph">in the docs</a>.</p><h3>Experimental support for ES modules</h3><p>While MikroORM v5 is still compiled and published as CommonJS, we added several improvements that should allow using it with ESM projects too. Namely, we use the <code>gen-esm-wrapper</code> package to allow using named imports, and we use one nasty trick to keep dynamic imports instead of compiling them to require statements – for that we need to use <code>MIKRO_ORM_DYNAMIC_IMPORTS</code> env var. This should allow us to use folder-based discovery with ES modules, which was previously not possible.</p><h3>Other notable changes</h3><ul><li>Partial loading support (<code>fields</code>) for joined loading strategy</li><li><code>AsyncLocalStorage</code> used by default in the <code>RequestContext</code> helper</li><li><code>onLoad</code> event (like <code>onInit</code>, but allows async and fires only for loaded entities, not references)</li><li>Exporting async functions from CLI config</li><li>Configurable aliasing strategy for SQL</li><li>Allow providing <a href="https://mikro-orm.io/docs/logging">custom Logger instance</a></li><li><a href="https://mikro-orm.io/docs/configuration/#persist-created-entities-automatically"><code>persist</code> option in <code>em.create()</code> and <code>persistOnCreate</code> global configuration</a></li><li>M:N support in entity generator</li><li>Support for specifying transaction isolation level</li><li>Controlling <a href="https://mikro-orm.io/docs/loading-strategies#population-where-condition">where condition for populate hints</a></li><li>Revamped <a href="https://mikro-orm.io/api">API docs</a></li><li>and <em>many many</em> more, see the <a href="https://github.com/mikro-orm/mikro-orm/blob/master/CHANGELOG.md#500-rc2-2022-02-03">full changelog here</a></li></ul><p>Also be sure to check the <a href="https://mikro-orm.io/docs/upgrading-v4-to-v5">upgrading guide</a>.</p><h3>What’s next?</h3><p>Here is a list of things I would like to focus on going forward:</p><ul><li>allow specifying pivot entity for M:N relations (so we can have additional columns there, but still map it as M:N for reading purposes)</li><li>support for database views (or maybe just entities representing SQL expressions)</li><li>more drivers – namely better-sqlite3 and cockroach sounds like low hanging fruit, given knex now supports those natively</li></ul><blockquote><p><em>Like</em> <a href="https://mikro-orm.io/"><em>MikroORM</em></a><em>? ⭐️</em> <a href="https://github.com/mikro-orm/mikro-orm"><em>Star it</em></a> <em>on GitHub and share this article with your friends. If you want to support the project financially, you can do so via</em> <a href="https://github.com/sponsors/B4nan"><em>GitHub Sponsors</em></a><em>.</em></p></blockquote>]]></content>
+        <author>
+            <name>Martin Adámek</name>
+            <uri>https://github.com/B4nan</uri>
+        </author>
+    </entry>
     <entry>
         <title type="html"><![CDATA[MikroORM 4.1: Let’s talk about performance]]></title>
         <id>mikro-orm-4-1-released</id>
